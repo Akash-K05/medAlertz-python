@@ -110,7 +110,36 @@ def get_drug_composition(medicine_name: str):
     except requests.exceptions.RequestException as e:
         print(f"❌ API request failed: {str(e)}")
         return "Unknown"
+# ==========================
+#  FUNCTION TO FETCH DRUG USES FROM GEMINI API
+# ==========================
+def get_drug_uses(medicine_name: str):
+    try:
+        api_key = "AIzaSyDtpOtj1RFITvqdc-tYpye4oevxJfk5R_4"  # Replace with your actual API key
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        
+        payload = {
+           "contents": [{
+        "parts":[{"text": f"What are the main therapeutic uses and indications of {medicine_name}? Please provide a brief, concise list."}]
+        }]
+        }
 
+        headers = {"Content-Type": "application/json"}
+
+        response = requests.post(api_url, json=payload, headers=headers)
+        
+        if response.status_code != 200:
+            print(f"❌ Error: API returned {response.status_code} - {response.text}")
+            return "Not Available"
+
+        response_data = response.json()
+        uses = response_data.get("candidates", [{}])[0].get("content").get("parts")[0].get("text")
+        
+        return uses if uses else "Not Available"
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ API request failed: {str(e)}")
+        return "Not Available"
 # ==========================
 #  FUNCTION TO FETCH DRUG SIDE EFFECTS FROM GEMINI API
 # ==========================
@@ -172,11 +201,7 @@ def is_authentic_drug(drug_composition: str, medicine_name: str):
                 found_in_database = True
                 break
         
-        # # If not found in database, return False
-        # if not found_in_database:
-        #     return False  # ❌ No compounds found (Counterfeit warning)
-        
-        # If found in database, check if it's banned in India using Gemini API
+        # Check if the medicine is banned in India using Gemini API
         try:
             api_key = "AIzaSyDtpOtj1RFITvqdc-tYpye4oevxJfk5R_4"  # Replace with your actual API key
             api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
@@ -203,16 +228,17 @@ def is_authentic_drug(drug_composition: str, medicine_name: str):
                 return False
                 
             response_data = response.json()
-            print(response_data)
-            api_response = response_data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            api_response = response_data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip().lower()
             
-            # Check if the medicine is banned
-            if "yes" in api_response.lower():
+            print(f"Ban check response for {medicine_name}: {api_response}")
+            
+            # Check if the medicine is banned - more strict checking
+            if "yes" in api_response or "banned" in api_response:
                 print(f"❌ Warning: {medicine_name} appears to be banned in India!")
-                return False
+                return False  # Not authentic if banned
             
-            # If not banned, return True (authentic and legal)
-            return True
+            # If it's not banned and found in database, it's authentic
+            return found_in_database
             
         except requests.exceptions.RequestException as e:
             print(f"❌ API request failed: {str(e)}")
@@ -221,8 +247,6 @@ def is_authentic_drug(drug_composition: str, medicine_name: str):
     except Exception as e:
         print(f"❌ Error checking drug authenticity: {str(e)}")
         return False
-    
-
 # ==========================
 #  GET MEDICINE INFO API ENDPOINT
 # ==========================
@@ -231,12 +255,14 @@ async def get_medicine_info(medicine_name: str):
     try:
         composition = get_drug_composition(medicine_name)
         side_effects = get_drug_side_effects(medicine_name)
+        uses=get_drug_uses(medicine_name)
         is_authentic = is_authentic_drug(composition, medicine_name)
         
         return {
             "medicine_name": medicine_name,
             "composition": composition,
             "side_effects": side_effects,
+            "uses": uses,
             "is_authentic": is_authentic
         }
     except Exception as e:
@@ -293,6 +319,7 @@ async def detect_medicine(file: UploadFile = File(...)):
                     # Get composition and side effects from Gemini API
                     composition = get_drug_composition(medicine_name)
                     side_effects = get_drug_side_effects(medicine_name)
+                    uses = get_drug_uses(medicine_name)  
                     
                     # Check authenticity
                     is_authentic = is_authentic_drug(composition,medicine_name)
@@ -303,6 +330,7 @@ async def detect_medicine(file: UploadFile = File(...)):
                         "medicine_name": medicine_name.strip(),
                         "confidence": float(confidence),
                         "composition": composition,
+                        "uses": uses,
                         "side_effects": side_effects,
                         "is_authentic": is_authentic
                     }
@@ -318,6 +346,7 @@ async def detect_medicine(file: UploadFile = File(...)):
                 "confidence": 0.0,
                 "composition": "Unknown",
                 "side_effects": "Not Available",
+                "uses": "Not Available",
                 "is_authentic": False
             }
 
@@ -346,7 +375,13 @@ async def update_medicine_name(update: MedicineUpdate):
         new_name = update.new_name
         composition = get_drug_composition(new_name)
         side_effects = get_drug_side_effects(new_name)
-        is_authentic = is_authentic_drug(composition,new_name)
+        uses = get_drug_uses(new_name)
+        
+        # Check authenticity with the updated medicine name
+        # This is the key part - making sure we're using the correct function
+        is_authentic = is_authentic_drug(composition, new_name)
+        
+        print(f"Medicine update: {new_name}, Authentic: {is_authentic}")  # Debug print
         
         return {
             "success": True,
@@ -354,13 +389,13 @@ async def update_medicine_name(update: MedicineUpdate):
             "updated_name": new_name,
             "composition": composition,
             "side_effects": side_effects,
-            "is_authentic": is_authentic
+            "uses": uses,
+            "is_authentic": is_authentic  # Ensure this is being passed correctly
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"❌ Error updating medicine name: {str(e)}")
-
 # ==========================
 #  RUN FASTAPI SERVER
 # ==========================
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8080)
+    uvicorn.run(app, host="0.0.0.0", port=10000, reload=True)
